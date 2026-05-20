@@ -2,24 +2,11 @@
 
 pragma solidity ^0.8.27;
 import "./interfaces/IAutoriaEvents.sol";
+
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract Autoria is IAutoriaEvents, ReentrancyGuard {
     // Масивчики прикольные
-
-    struct erc4337 {
-        address sender;
-        uint256 nonce;
-        bytes initCode;
-        bytes callData;
-        uint256 callGasLimit;
-        uint256 verificationGasLimit;
-        uint256 preVerificationGas;
-        uint256 maxFeePerGas;
-        uint256 maxPriotrityFeePerGas;
-        bytes paymasterAndData;
-        bytes signature;
-    }
 
     struct DealData {
         StatusData statusData;
@@ -78,6 +65,7 @@ contract Autoria is IAutoriaEvents, ReentrancyGuard {
 
     // mapping
     mapping(uint256 => DealData) public dealsId;
+    mapping(address => uint256[]) public Paymastercheck;
 
     // modifier onlyRole(uint256 id, address mustBe) {
     //     if (msg.sender != mustBe) {
@@ -93,12 +81,13 @@ contract Autoria is IAutoriaEvents, ReentrancyGuard {
         return dealsId[id];
     }
 
+    function getDealAddress(address ask) external view returns (uint256[] memory) {
+        return (Paymastercheck[ask]);
+    }
+
     // cоздаем сделку
 
-    function createAnnouncement(
-        uint256 price,
-        uint256 commission
-    ) public payable {
+    function createAnnouncement(uint256 price, uint256 commission) public payable {
         if (commission >= price) {
             revert CommissionCantBeBiggerThanPrice(price, commission);
         }
@@ -111,6 +100,7 @@ contract Autoria is IAutoriaEvents, ReentrancyGuard {
 
         dealCounter += 1;
         uint256 id = dealCounter;
+        Paymastercheck[msg.sender].push(dealCounter);
 
         dealsId[id].sellersPledge = sellersPledge;
         dealsId[id].seller = msg.sender;
@@ -121,14 +111,7 @@ contract Autoria is IAutoriaEvents, ReentrancyGuard {
         dealsId[id].statusData = StatusData.Listed;
         dealsId[id].timestamp = block.timestamp;
 
-        emit DealCreated(
-            id,
-            msg.sender,
-            price,
-            commission,
-            dealsId[id].sellersPledge,
-            block.timestamp
-        );
+        emit DealCreated(id, msg.sender, price, commission, dealsId[id].sellersPledge, block.timestamp);
     }
 
     // определяем арбитра
@@ -147,12 +130,14 @@ contract Autoria is IAutoriaEvents, ReentrancyGuard {
         if (dealsId[id].statusData == StatusData.Listed) {
             dealsId[id].arbiter = msg.sender;
             dealsId[id].statusData = StatusData.ArbiterAssigned;
+            Paymastercheck[msg.sender].push(id);
             emit ArbiterSet(msg.sender, id, block.timestamp);
         } else if (dealsId[id].statusData == StatusData.FastPay) {
             dealsId[id].arbiter = msg.sender;
             dealsId[id].statusData = StatusData.Funded;
             dealsId[id].deadline = block.timestamp + RESOLUTION_DEADLINE;
             emit ArbiterSet(msg.sender, id, block.timestamp);
+            Paymastercheck[msg.sender].push(id);
         } else {
             revert InvalidStatus(msg.sender);
         }
@@ -188,12 +173,14 @@ contract Autoria is IAutoriaEvents, ReentrancyGuard {
             dealsId[id].amount = msg.value;
             dealsId[id].deadline = block.timestamp + RESOLUTION_DEADLINE;
             dealsId[id].statusData = StatusData.Funded;
+            Paymastercheck[msg.sender].push(id);
             emit Deposit(msg.sender, msg.value, block.timestamp);
         } else if (dealsId[id].statusData == StatusData.Listed) {
             dealsId[id].waitTime = block.timestamp + ARBITER_WAITTIME;
             dealsId[id].buyer = msg.sender;
             dealsId[id].amount = msg.value;
             dealsId[id].statusData = StatusData.FastPay;
+            Paymastercheck[msg.sender].push(id);
             emit Deposit(msg.sender, msg.value, block.timestamp);
         } else {
             revert InvalidStatus(msg.sender);
@@ -217,82 +204,35 @@ contract Autoria is IAutoriaEvents, ReentrancyGuard {
             dealsId[id].statusData = StatusData.Completed;
             emit Approved(dealsId[id].arbiter, id, block.timestamp);
 
-            (bool sendToArbiter, ) = payable(dealsId[id].arbiter).call{
-                value: dealsId[id].arbiterPart
-            }("");
+            (bool sendToArbiter,) = payable(dealsId[id].arbiter).call{value: dealsId[id].arbiterPart}("");
             if (sendToArbiter != true) {
-                revert TransferFailed(
-                    dealsId[id].arbiter,
-                    id,
-                    dealsId[id].arbiterPart
-                );
+                revert TransferFailed(dealsId[id].arbiter, id, dealsId[id].arbiterPart);
             }
 
-            (bool sendToSeller, ) = payable(dealsId[id].seller).call{
-                value: dealsId[id].sellerPart
-            }("");
+            (bool sendToSeller,) = payable(dealsId[id].seller).call{value: dealsId[id].sellerPart}("");
             if (sendToSeller != true) {
-                revert TransferFailed(
-                    dealsId[id].seller,
-                    id,
-                    dealsId[id].sellerPart
-                );
+                revert TransferFailed(dealsId[id].seller, id, dealsId[id].sellerPart);
             }
 
-            (bool sendPledgeToSeller, ) = payable(dealsId[id].seller).call{
-                value: dealsId[id].sellersPledge
-            }("");
+            (bool sendPledgeToSeller,) = payable(dealsId[id].seller).call{value: dealsId[id].sellersPledge}("");
             if (sendPledgeToSeller != true) {
-                revert TransferFailed(
-                    dealsId[id].seller,
-                    id,
-                    dealsId[id].sellersPledge
-                );
+                revert TransferFailed(dealsId[id].seller, id, dealsId[id].sellersPledge);
             }
-            emit PledgeReturned(
-                id,
-                dealsId[id].seller,
-                dealsId[id].sellersPledge,
-                block.timestamp
-            );
+            emit PledgeReturned(id, dealsId[id].seller, dealsId[id].sellersPledge, block.timestamp);
         } else {
             dealsId[id].statusData = StatusData.Refunded;
-            emit Canceled(
-                dealsId[id].buyer,
-                msg.sender,
-                id,
-                dealsId[id].carPrice,
-                block.timestamp
-            );
+            emit Canceled(dealsId[id].buyer, msg.sender, id, dealsId[id].carPrice, block.timestamp);
 
-            (bool sendToBuyer, ) = payable(dealsId[id].buyer).call{
-                value: dealsId[id].carPrice
-            }("");
+            (bool sendToBuyer,) = payable(dealsId[id].buyer).call{value: dealsId[id].carPrice}("");
             if (sendToBuyer != true) {
-                revert TransferFailed(
-                    dealsId[id].buyer,
-                    id,
-                    dealsId[id].carPrice
-                );
+                revert TransferFailed(dealsId[id].buyer, id, dealsId[id].carPrice);
             }
 
-            (bool sendToArbiter, ) = payable(dealsId[id].arbiter).call{
-                value: dealsId[id].sellersPledge
-            }("");
+            (bool sendToArbiter,) = payable(dealsId[id].arbiter).call{value: dealsId[id].sellersPledge}("");
             if (sendToArbiter != true) {
-                revert TransferFailed(
-                    dealsId[id].arbiter,
-                    id,
-                    dealsId[id].sellersPledge
-                );
+                revert TransferFailed(dealsId[id].arbiter, id, dealsId[id].sellersPledge);
             }
-            emit PledgeSlashed(
-                id,
-                dealsId[id].seller,
-                dealsId[id].arbiter,
-                dealsId[id].sellersPledge,
-                block.timestamp
-            );
+            emit PledgeSlashed(id, dealsId[id].seller, dealsId[id].arbiter, dealsId[id].sellersPledge, block.timestamp);
         }
     }
 
@@ -317,29 +257,16 @@ contract Autoria is IAutoriaEvents, ReentrancyGuard {
         dealsId[id].statusData = StatusData.Expired;
         emit TimeCancel(dealsId[id].buyer, id, block.timestamp);
 
-        (bool refund, ) = payable(dealsId[id].buyer).call{
-            value: dealsId[id].carPrice
-        }("");
+        (bool refund,) = payable(dealsId[id].buyer).call{value: dealsId[id].carPrice}("");
         if (refund != true) {
             revert RefundFailed(dealsId[id].buyer);
         }
 
-        (bool sendPledgeToSeller, ) = payable(dealsId[id].seller).call{
-            value: dealsId[id].sellersPledge
-        }("");
+        (bool sendPledgeToSeller,) = payable(dealsId[id].seller).call{value: dealsId[id].sellersPledge}("");
         if (sendPledgeToSeller != true) {
-            revert TransferFailed(
-                dealsId[id].seller,
-                id,
-                dealsId[id].sellersPledge
-            );
+            revert TransferFailed(dealsId[id].seller, id, dealsId[id].sellersPledge);
         }
-        emit PledgeReturned(
-            id,
-            dealsId[id].seller,
-            dealsId[id].sellersPledge,
-            block.timestamp
-        );
+        emit PledgeReturned(id, dealsId[id].seller, dealsId[id].sellersPledge, block.timestamp);
     }
 
     function arbiterNotFound(uint256 id) public nonReentrant {
@@ -359,37 +286,22 @@ contract Autoria is IAutoriaEvents, ReentrancyGuard {
             revert Failed();
         }
 
-        if (
-            msg.sender != dealsId[id].seller && msg.sender != dealsId[id].buyer
-        ) {
+        if (msg.sender != dealsId[id].seller && msg.sender != dealsId[id].buyer) {
             revert AccessDenied(msg.sender, block.timestamp);
         }
         dealsId[id].statusData = StatusData.Expired;
         emit TimeCancel(dealsId[id].buyer, id, block.timestamp);
 
-        (bool refund, ) = payable(dealsId[id].buyer).call{
-            value: dealsId[id].carPrice
-        }("");
+        (bool refund,) = payable(dealsId[id].buyer).call{value: dealsId[id].carPrice}("");
 
         if (refund != true) {
             revert RefundFailed(dealsId[id].buyer);
         }
 
-        (bool sendPledgeToSeller, ) = payable(dealsId[id].seller).call{
-            value: dealsId[id].sellersPledge
-        }("");
+        (bool sendPledgeToSeller,) = payable(dealsId[id].seller).call{value: dealsId[id].sellersPledge}("");
         if (sendPledgeToSeller != true) {
-            revert TransferFailed(
-                dealsId[id].seller,
-                id,
-                dealsId[id].sellersPledge
-            );
+            revert TransferFailed(dealsId[id].seller, id, dealsId[id].sellersPledge);
         }
-        emit PledgeReturned(
-            id,
-            dealsId[id].seller,
-            dealsId[id].sellersPledge,
-            block.timestamp
-        );
+        emit PledgeReturned(id, dealsId[id].seller, dealsId[id].sellersPledge, block.timestamp);
     }
 }
